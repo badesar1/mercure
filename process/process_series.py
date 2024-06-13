@@ -255,18 +255,19 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             detach=True,
         )
 
-        # Wait for end of container execution
+        # Check if logs are available and stream them in real time
+        if container.logs():
+            logger.info("=== MODULE OUTPUT - BEGIN ========================================")
+            for log in container.logs(stream=True):
+                log_line = log.decode('utf-8')
+                print(log_line, end='')
+                if not config.mercure.processing_logs.discard_logs:
+                    monitor.send_process_logs(task.id, task_processing.module_name, log_line)
+            logger.info("=== MODULE OUTPUT - END ==========================================")
+
+        # Wait for the container to finish executing
         docker_result = container.wait()
         logger.info(docker_result)
-
-        # Print the log out of the module
-        logger.info("=== MODULE OUTPUT - BEGIN ========================================")
-        if container.logs() is not None:
-            logs = container.logs().decode("utf-8")
-            if not config.mercure.processing_logs.discard_logs:
-                monitor.send_process_logs(task.id, task_processing.module_name, logs)
-            logger.info(logs)
-        logger.info("=== MODULE OUTPUT - END ==========================================")
 
         # In lieu of making mercure a sudoer...
         logger.debug("Changing the ownership of the output directory...")
