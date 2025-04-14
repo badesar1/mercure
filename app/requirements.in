@@ -50,6 +50,9 @@ psycopg2
 asyncpg
 starlette-decoRouter
 
+bleach
+pydantic
+
 # processing
 docker
 python-nomad

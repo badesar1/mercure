@@ -6,7 +6,7 @@ Rules page for the graphical user interface of mercure.
 
 import json
 # Standard python includes
-from typing import Any, Dict, Set
+from typing import Any, Dict, Set, List, Optional
 
 # App-specific includes
 import common.config as config
@@ -22,10 +22,66 @@ from starlette.authentication import requires
 from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from webinterface.common import templates
 
+from pydantic import BaseModel, EmailStr, constr, ValidationError
+import bleach
+
 router = decoRouter()
 
-
 logger = config.get_logger()
+
+##########################
+# Helper: HTML Sanitization
+##########################
+def sanitize_html(html_content: str) -> str:
+    """
+    Clean the HTML content using bleach to allow only certain safe tags.
+    """
+    allowed_tags = ['b', 'i', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li']
+    allowed_attributes = {
+        'a': ['href', 'title']
+    }
+    return bleach.clean(html_content, tags=allowed_tags, attributes=allowed_attributes, strip=True)
+
+def sanitize_field(field_value: str) -> str:
+    """
+    Sanitize a plain text field by stripping out all HTML tags.
+    Use this for all fields that expect plain text.
+    """
+    return bleach.clean(field_value, tags=[], strip=True)
+
+##########################
+# Helper: Pydantic model for rule update
+##########################
+class RuleUpdateInput(BaseModel):
+    # Basic rule fields; adjust constraints as needed.
+    rule: constr(min_length=1)
+    target: List[str]
+    status_disabled: bool = False
+    status_fallback: bool = False
+    contact: Optional[EmailStr] = None
+    comment: Optional[str] = ""
+    tags: Optional[str] = ""
+    action: Optional[str] = "route"
+    action_trigger: Optional[str] = "series"
+    study_trigger_condition: Optional[str] = "timeout"
+    study_trigger_series: Optional[str] = ""
+    study_force_completion_action: Optional[str] = ""
+    priority: Optional[str] = "normal"
+    # In some cases processing_module may be a comma-separated string
+    processing_module: Optional[str] = ""
+    processing_settings: Optional[Dict] = {}
+    processing_retain_images: bool = False
+    notification_webhook: Optional[str] = ""
+    notification_email: Optional[str] = ""
+    # Fields that might contain HTML:
+    notification_payload: Optional[str] = ""
+    notification_payload_body: Optional[str] = ""
+    notification_email_body: Optional[str] = ""
+    notification_email_html: bool = False
+    notification_trigger_reception: bool = False
+    notification_trigger_completion: bool = False
+    notification_trigger_completion_on_request: bool = False
+    notification_trigger_error: bool = False
 
 
 ###################################################################################
@@ -59,8 +115,8 @@ async def duplicate_rule(request) -> Response:
     except Exception:
         return PlainTextResponse("Configuration is being updated. Try again in a minute.")
     form = await request.form()
-    new_name = form.get("new_name", "")
-    old_name = form.get("old_name", "")
+    new_name = sanitize_field(form.get("new_name", "").strip())
+    old_name = sanitize_field(form.get("old_name", "").strip())
     if not old_name or not new_name or old_name == new_name or new_name in config.mercure.rules:
         return PlainTextResponse("Invalid input or duplicate name.")
 
@@ -81,7 +137,7 @@ async def add_rule(request) -> Response:
 
     form = dict(await request.form())
 
-    newrule = form.get("name", "")
+    newrule = sanitize_field(form.get("name", ""))
     if newrule in config.mercure.rules:
         return PlainTextResponse("Rule already exists.")
 
@@ -156,61 +212,108 @@ async def rules_edit_post(request) -> Response:
     except Exception:
         return PlainTextResponse("Configuration is being updated. Try again in a minute.")
 
-    editrule = request.path_params["rule"]
+    editrule = sanitize_field(request.path_params["rule"])
     if editrule not in config.mercure.rules:
         return PlainTextResponse("Rule does not exist anymore.")
 
     try:
         form_data = await request.form()
         form = dict(form_data)
-        target_list = form_data.getlist("target")
+        target_list = [sanitize_field(t) for t in form_data.getlist("target")]
     except Exception:
         return PlainTextResponse("Invalid form data.")
 
-    # Ensure that the processing settings are valid. Should happen on the client side too, but can't hurt
-    # to check again
+
+    # Pre-process some fields
+    # Attempt to load processing settings as JSON
     try:
-        new_processing_settings: Dict = json.loads(form.get("processing_settings", "{}"))
+        processing_settings = json.loads(form.get("processing_settings", "{}"))
     except Exception:
-        new_processing_settings = {}
+        processing_settings = {}
 
+    # Handle processing_module field logic
     if "processing_module_list" in form:
-        processing_module = form.get("processing_module_list", "").split(",")
-        if processing_module == [""]:
-            processing_module = ""
+        proc_mod_list = [sanitize_field(x) for x in form.get("processing_module_list", "").split(",") if x.strip()]
+        processing_module = ",".join(proc_mod_list) if proc_mod_list else ""
     else:
-        processing_module = form.get("processing_module", "")
+        processing_module = sanitize_field(form.get("processing_module", ""))
 
-    notification_payload = form.get("notification_payload", "")
-    notification_payload = notification_payload.strip().lstrip("{").rstrip("}")
+    # Trim and normalize the notification payload
+    notification_payload = sanitize_field(form.get("notification_payload", "").strip().lstrip("{").rstrip("}"))
+
+
+    # Build a dictionary of inputs expected by our Pydantic model
+    # Note: The keys here match the model names. You might need to adjust based on your actual Rule type.
+    input_data = {
+        "rule": sanitize_field(form.get("rule", "False")),
+        "target": target_list,
+        "status_disabled": form.get("status_disabled", "False"),
+        "status_fallback": form.get("status_fallback", "False"),
+        "contact": sanitize_field(form.get("contact", "")),
+        "comment": sanitize_html(form.get("comment", "")),
+        "tags": sanitize_field(form.get("tags", "")),
+        "action": sanitize_field(form.get("action", "route")),
+        "action_trigger": sanitize_field(form.get("action_trigger", "series")),
+        "study_trigger_condition": sanitize_field(form.get("study_trigger_condition", "timeout")),
+        "study_trigger_series": sanitize_field(form.get("study_trigger_series", "")),
+        "study_force_completion_action": sanitize_field(form.get("study_force_completion_action", "")),
+        "priority": sanitize_field(form.get("priority", "normal")),
+        "processing_module": processing_module,
+        "processing_settings": processing_settings,
+        "processing_retain_images": form.get("processing_retain_images", "False"),
+        "notification_webhook": sanitize_field(form.get("notification_webhook", "")),
+        "notification_email": sanitize_field(form.get("notification_email", "")),
+        "notification_payload": sanitize_html(notification_payload),
+        "notification_payload_body": sanitize_html(form.get("notification_payload_body", "")),
+        "notification_email_body": sanitize_html(form.get("notification_email_body", "")),
+        "notification_email_html": form.get("notification_email_html", False),
+        "notification_trigger_reception": form.get("notification_trigger_reception", "False"),
+        "notification_trigger_completion": form.get("notification_trigger_completion", "False"),
+        "notification_trigger_completion_on_request": form.get("notification_trigger_completion_on_request", "False"),
+        "notification_trigger_error": form.get("notification_trigger_error", "False"),
+    }
+
+    # Validate and convert the input data using Pydantic.
+    try:
+        validated_data = RuleUpdateInput(**input_data)
+    except ValidationError as ve:
+        return PlainTextResponse(f"Input validation error: {ve}", status_code=400)
+
+    # Sanitize HTML inputs
+    validated_data.comment = sanitize_html(validated_data.comment)
+    validated_data.notification_payload_body = sanitize_html(validated_data.notification_payload_body)
+    validated_data.notification_email_body = sanitize_html(validated_data.notification_email_body)
+    # Optionally, if notification_payload may contain HTML, sanitize it as well.
+    validated_data.notification_payload = sanitize_html(validated_data.notification_payload)
+
 
     new_rule: Rule = Rule(
-        rule=form.get("rule", "False"),
-        target=target_list,
-        disabled=form.get("status_disabled", "False"),
-        fallback=form.get("status_fallback", "False"),
-        contact=form.get("contact", ""),
-        comment=form.get("comment", ""),
-        tags=form.get("tags", ""),
-        action=form.get("action", "route"),
-        action_trigger=form.get("action_trigger", "series"),
-        study_trigger_condition=form.get("study_trigger_condition", "timeout"),
-        study_trigger_series=form.get("study_trigger_series", ""),
-        study_force_completion_action=form.get("study_force_completion_action", ""),
-        priority=form.get("priority", "normal"),
-        processing_module=processing_module,
-        processing_settings=new_processing_settings,
-        processing_retain_images=form.get("processing_retain_images", "False"),
-        notification_webhook=form.get("notification_webhook", ""),
-        notification_email=form.get("notification_email", ""),
-        notification_payload=notification_payload,
-        notification_payload_body=form.get("notification_payload_body", ""),
-        notification_email_body=form.get("notification_email_body", ""),
-        notification_email_type="html" if form.get("notification_email_html", False) else "plain",
-        notification_trigger_reception=form.get("notification_trigger_reception", "False"),
-        notification_trigger_completion=form.get("notification_trigger_completion", "False"),
-        notification_trigger_completion_on_request=form.get("notification_trigger_completion_on_request", "False"),
-        notification_trigger_error=form.get("notification_trigger_error", "False"),
+        rule=validated_data.rule,
+        target=validated_data.target,
+        disabled=str(validated_data.status_disabled),
+        fallback=str(validated_data.status_fallback),
+        contact=validated_data.contact,
+        comment=validated_data.comment,
+        tags=validated_data.tags,
+        action=validated_data.action,
+        action_trigger=validated_data.action_trigger,
+        study_trigger_condition=validated_data.study_trigger_condition,
+        study_trigger_series=validated_data.study_trigger_series,
+        study_force_completion_action=validated_data.study_force_completion_action,
+        priority=validated_data.priority,
+        processing_module=validated_data.processing_module,
+        processing_settings=validated_data.processing_settings,
+        processing_retain_images=str(validated_data.processing_retain_images),
+        notification_webhook=validated_data.notification_webhook,
+        notification_email=validated_data.notification_email,
+        notification_payload=validated_data.notification_payload,
+        notification_payload_body=validated_data.notification_payload_body,
+        notification_email_body=validated_data.notification_email_body,
+        notification_email_type="html" if validated_data.notification_email_html else "plain",
+        notification_trigger_reception=str(validated_data.notification_trigger_reception),
+        notification_trigger_completion=str(validated_data.notification_trigger_completion),
+        notification_trigger_completion_on_request=str(validated_data.notification_trigger_completion_on_request),
+        notification_trigger_error=str(validated_data.notification_trigger_error),
     )
     config.mercure.rules[editrule] = new_rule
 
@@ -256,7 +359,7 @@ async def rules_test(request) -> Response:
     attrs_accessed = set()
     try:
         form = dict(await request.form())
-        testrule = form["rule"]
+        testrule = sanitize_field(form["rule"])
         testvalues = json.loads(form["testvalues"])
     except Exception:
         return PlainTextResponse(
@@ -289,15 +392,18 @@ async def rules_test(request) -> Response:
         text = "Error"
         inline = e
 
-    attrs_accessed_info = ("\n".join([f"{x} = \"{testvalues[x]}\"" for x in attrs_accessed])
-                           if len(attrs_accessed) > 0 else None)
-
-    _inline = repr(inline) if not isinstance(inline, Exception) else str(inline)
-    return PlainTextResponse(f'<span class="tag is-{style} is-medium ruleresult"><i class="fas fa-{icon}"></i>&nbsp;{text}</span>'  # noqa: E501
-                             + (f'<pre style="display:inline; margin-left: 1em">{_inline}</pre>'
-                                if inline is not noresult else '')
-                             + (f'<pre style="margin: 1em">Tags evaluated:\n{attrs_accessed_info}</pre>' if attrs_accessed_info else '')  # noqa: E501
-                             )
+    # Sanitize attributes information before output.
+    attrs_accessed_info = ("\n".join(
+        [f"{sanitize_field(str(x))} = \"{sanitize_field(str(testvalues.get(x, '')))}\""
+         for x in attrs_accessed])
+                           if attrs_accessed else None)
+    _inline = sanitize_field(repr(inline)) if not isinstance(inline, Exception) else sanitize_field(str(inline))
+    return PlainTextResponse(
+        f'<span class="tag is-{style} is-medium ruleresult">'
+        f'<i class="fas fa-{icon}"></i>&nbsp;{text}</span>'
+        + (f'<pre style="display:inline; margin-left: 1em">{_inline}</pre>' if inline is not noresult else '')
+        + (f'<pre style="margin: 1em">Tags evaluated:\n{attrs_accessed_info}</pre>' if attrs_accessed_info else '')
+    )
 
 
 @router.post("/test_completionseries")
@@ -306,7 +412,7 @@ async def rules_test_completionseries(request) -> Response:
     """Evalutes if a given value for the series list for study completion is valid."""
     try:
         form = dict(await request.form())
-        test_series_list = form["study_trigger_series"]
+        test_series_list = sanitize_field(form["study_trigger_series"])
     except Exception:
         return PlainTextResponse(
             '<span class="tag is-warning is-medium ruleresult"><i class="fas fa-bug"></i>&nbsp;Error</span>&nbsp;&nbsp;Invalid'

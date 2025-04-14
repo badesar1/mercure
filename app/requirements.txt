@@ -308,5 +308,8 @@ wheel==0.43.0
 yarl==1.18.0
     # via aiohttp
 
+bleach
+pydantic
+
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools
