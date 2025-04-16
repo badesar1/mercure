@@ -241,6 +241,8 @@ async def rules_edit_post(request) -> Response:
     # Trim and normalize the notification payload
     notification_payload = sanitize_field(form.get("notification_payload", "").strip().lstrip("{").rstrip("}"))
 
+    raw_contact = form.get("contact", "")
+    sanitized_contact = sanitize_field(raw_contact).strip()
 
     # Build a dictionary of inputs expected by our Pydantic model
     # Note: The keys here match the model names. You might need to adjust based on your actual Rule type.
@@ -249,7 +251,7 @@ async def rules_edit_post(request) -> Response:
         "target": target_list,
         "status_disabled": form.get("status_disabled", "False"),
         "status_fallback": form.get("status_fallback", "False"),
-        "contact": sanitize_field(form.get("contact", "")),
+        "contact": sanitized_contact if sanitized_contact else None,
         "comment": sanitize_html(form.get("comment", "")),
         "tags": sanitize_field(form.get("tags", "")),
         "action": sanitize_field(form.get("action", "route")),
@@ -286,35 +288,46 @@ async def rules_edit_post(request) -> Response:
     # Optionally, if notification_payload may contain HTML, sanitize it as well.
     validated_data.notification_payload = sanitize_html(validated_data.notification_payload)
 
+    contact_for_rule = validated_data.contact if validated_data.contact is not None else ""
+    
+    try:
+        new_rule: Rule = Rule(
+            rule=validated_data.rule,
+            target=validated_data.target,
+            disabled=validated_data.status_disabled,  # Assuming Rule expects bool directly or string conversion happens elsewhere/is okay
+            fallback=validated_data.status_fallback,  # Same assumption as disabled
+            contact=contact_for_rule, # Use the converted "" or the original email
+            comment=validated_data.comment,
+            tags=validated_data.tags,
+            action=validated_data.action,
+            action_trigger=validated_data.action_trigger,
+            study_trigger_condition=validated_data.study_trigger_condition,
+            study_trigger_series=validated_data.study_trigger_series,
+            study_force_completion_action=validated_data.study_force_completion_action,
+            priority=validated_data.priority,
+            processing_module=validated_data.processing_module,
+            processing_settings=validated_data.processing_settings,
+            processing_retain_images=validated_data.processing_retain_images, # Assuming Rule expects bool
+            notification_webhook=validated_data.notification_webhook,
+            notification_email=validated_data.notification_email, # Assuming "" is okay here if Rule expects str
+            notification_payload=validated_data.notification_payload,
+            notification_payload_body=validated_data.notification_payload_body,
+            notification_email_body=validated_data.notification_email_body,
+            notification_email_type="html" if validated_data.notification_email_html else "plain",
+            notification_trigger_reception=validated_data.notification_trigger_reception, # Assuming Rule expects bool
+            notification_trigger_completion=validated_data.notification_trigger_completion, # Assuming Rule expects bool
+            notification_trigger_completion_on_request=validated_data.notification_trigger_completion_on_request, # Assuming Rule expects bool
+            notification_trigger_error=validated_data.notification_trigger_error, # Assuming Rule expects bool
+        )
+    except ValidationError as ve_rule:
+        # Handle potential validation errors from the Rule class itself if needed
+        logger.error(f"Failed to create Rule object: {ve_rule}")
+        return PlainTextResponse(f"Internal configuration error creating rule object: {ve_rule}", status_code=500)
+    except Exception as e:
+        # Catch other unexpected errors during Rule creation
+        logger.error(f"Unexpected error creating Rule object: {e}", exc_info=True)
+        return PlainTextResponse(f"Unexpected internal error creating rule object.", status_code=500)
 
-    new_rule: Rule = Rule(
-        rule=validated_data.rule,
-        target=validated_data.target,
-        disabled=str(validated_data.status_disabled),
-        fallback=str(validated_data.status_fallback),
-        contact=validated_data.contact,
-        comment=validated_data.comment,
-        tags=validated_data.tags,
-        action=validated_data.action,
-        action_trigger=validated_data.action_trigger,
-        study_trigger_condition=validated_data.study_trigger_condition,
-        study_trigger_series=validated_data.study_trigger_series,
-        study_force_completion_action=validated_data.study_force_completion_action,
-        priority=validated_data.priority,
-        processing_module=validated_data.processing_module,
-        processing_settings=validated_data.processing_settings,
-        processing_retain_images=str(validated_data.processing_retain_images),
-        notification_webhook=validated_data.notification_webhook,
-        notification_email=validated_data.notification_email,
-        notification_payload=validated_data.notification_payload,
-        notification_payload_body=validated_data.notification_payload_body,
-        notification_email_body=validated_data.notification_email_body,
-        notification_email_type="html" if validated_data.notification_email_html else "plain",
-        notification_trigger_reception=str(validated_data.notification_trigger_reception),
-        notification_trigger_completion=str(validated_data.notification_trigger_completion),
-        notification_trigger_completion_on_request=str(validated_data.notification_trigger_completion_on_request),
-        notification_trigger_error=str(validated_data.notification_trigger_error),
-    )
     config.mercure.rules[editrule] = new_rule
 
     try:

@@ -310,6 +310,7 @@ yarl==1.18.0
 
 bleach
 pydantic
+pydantic[email]
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools

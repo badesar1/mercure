@@ -52,6 +52,7 @@ starlette-decoRouter
 
 bleach
 pydantic
+pydantic[email]
 
 # processing
 docker
